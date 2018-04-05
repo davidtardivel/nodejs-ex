@@ -1,108 +1,86 @@
-//  OpenShift sample Node application
-var express = require('express'),
-    app     = express(),
-    morgan  = require('morgan');
-    
-Object.assign=require('object-assign')
+var express = require('express');
+var cors = require('cors')
+var graphqlHTTP = require('express-graphql');
+var { buildSchema } = require('graphql');
 
-app.engine('html', require('ejs').renderFile);
-app.use(morgan('combined'))
+// Construct a schema, using GraphQL schema language
+var schema = buildSchema(`
+  input MessageInput {
+    content: String
+    author: String
+  }
+
+  type Message {
+    id: ID!
+    content: String
+    author: String
+  }
+
+  type Query {
+    getMessage(id: ID!): Message
+  }
+
+  type Mutation {
+    createMessage(input: MessageInput): Message
+    updateMessage(id: ID!, input: MessageInput): Message
+  }
+`);
+
+// If Message had any complex fields, we'd put them on this object.
+class Message {
+  constructor(id, {content, author}) {
+    this.id = id;
+    this.content = content;
+    this.author = author;
+  }
+}
+
+// Maps username to content
+var fakeDatabase = {};
+
+var root = {
+  getMessage: function ({id}) {
+    if (!fakeDatabase[id]) {
+      throw new Error('no message exists with id ' + id);
+    }
+    return new Message(id, fakeDatabase[id]);
+  },
+  createMessage: function ({input}) {
+    // Create a random id for our "database".
+    var id = require('crypto').randomBytes(10).toString('hex');
+
+    fakeDatabase[id] = input;
+    return new Message(id, input);
+  },
+  updateMessage: function ({id, input}) {
+    if (!fakeDatabase[id]) {
+      throw new Error('no message exists with id ' + id);
+    }
+    // This replaces all old data, but some apps might want partial update.
+    fakeDatabase[id] = input;
+    return new Message(id, input);
+  },
+};
 
 var port = process.env.PORT || process.env.OPENSHIFT_NODEJS_PORT || 8080,
     ip   = process.env.IP   || process.env.OPENSHIFT_NODEJS_IP || '0.0.0.0',
-    mongoURL = process.env.OPENSHIFT_MONGODB_DB_URL || process.env.MONGO_URL,
-    mongoURLLabel = "";
 
-if (mongoURL == null && process.env.DATABASE_SERVICE_NAME) {
-  var mongoServiceName = process.env.DATABASE_SERVICE_NAME.toUpperCase(),
-      mongoHost = process.env[mongoServiceName + '_SERVICE_HOST'],
-      mongoPort = process.env[mongoServiceName + '_SERVICE_PORT'],
-      mongoDatabase = process.env[mongoServiceName + '_DATABASE'],
-      mongoPassword = process.env[mongoServiceName + '_PASSWORD']
-      mongoUser = process.env[mongoServiceName + '_USER'];
+var app = express();
+app.use(cors())
 
-  if (mongoHost && mongoPort && mongoDatabase) {
-    mongoURLLabel = mongoURL = 'mongodb://';
-    if (mongoUser && mongoPassword) {
-      mongoURL += mongoUser + ':' + mongoPassword + '@';
-    }
-    // Provide UI label that excludes user id and pw
-    mongoURLLabel += mongoHost + ':' + mongoPort + '/' + mongoDatabase;
-    mongoURL += mongoHost + ':' +  mongoPort + '/' + mongoDatabase;
-
-  }
-}
-var db = null,
-    dbDetails = new Object();
-
-var initDb = function(callback) {
-  if (mongoURL == null) return;
-
-  var mongodb = require('mongodb');
-  if (mongodb == null) return;
-
-  mongodb.connect(mongoURL, function(err, conn) {
-    if (err) {
-      callback(err);
-      return;
-    }
-
-    db = conn;
-    dbDetails.databaseName = db.databaseName;
-    dbDetails.url = mongoURLLabel;
-    dbDetails.type = 'MongoDB';
-
-    console.log('Connected to MongoDB at: %s', mongoURL);
-  });
-};
-
-app.get('/', function (req, res) {
-  // try to initialize the db on every request if it's not already
-  // initialized.
-  if (!db) {
-    initDb(function(err){});
-  }
-  if (db) {
-    var col = db.collection('counts');
-    // Create a document with request IP and current time of request
-    col.insert({ip: req.ip, date: Date.now()});
-    col.count(function(err, count){
-      if (err) {
-        console.log('Error running count. Message:\n'+err);
-      }
-      res.render('index.html', { pageCountMessage : count, dbInfo: dbDetails });
-    });
-  } else {
-    res.render('index.html', { pageCountMessage : null});
-  }
+app.use(function(req, res, next) {
+  res.header("Access-Control-Allow-Origin", "*");
+  next();
 });
 
-app.get('/pagecount', function (req, res) {
-  // try to initialize the db on every request if it's not already
-  // initialized.
-  if (!db) {
-    initDb(function(err){});
-  }
-  if (db) {
-    db.collection('counts').count(function(err, count ){
-      res.send('{ pageCount: ' + count + '}');
-    });
-  } else {
-    res.send('{ pageCount: -1 }');
-  }
-});
+app.use('/graphql', graphqlHTTP({
+  schema: schema,
+  rootValue: root,
+  graphiql: true,
+}));
 
-// error handling
-app.use(function(err, req, res, next){
-  console.error(err.stack);
-  res.status(500).send('Something bad happened!');
-});
+app.use(express.static('public'));
 
-initDb(function(err){
-  console.log('Error connecting to Mongo. Message:\n'+err);
-});
+app.listen(port, ip, () => console.log('Now browse to localhost:4000/graphql'));
 
-app.listen(port, ip);
-console.log('Server running on http://%s:%s', ip, port);
 
-module.exports = app ;
