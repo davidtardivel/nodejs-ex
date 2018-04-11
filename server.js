@@ -79,7 +79,7 @@ app.use('/graphql', graphqlHTTP({
   graphiql: true,
 }));
 
-app.use(express.static('public'));
+app.use('/static', express.static(__dirname + '/public'));
 
 app.listen(port, ip, () => console.log('Now browse to localhost:4000/graphql'));
 
